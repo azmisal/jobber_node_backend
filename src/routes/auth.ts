@@ -1,61 +1,93 @@
-import { Router, Request, Response } from 'express';
-import { User, IUser } from '../models/user';
-import { hashPassword, verifyPassword, createJWT } from '../models/auth';
+// src/routes/auth.routes.ts
 
-const router = Router();
+import express from "express";
+import User, { UserSignup, UserLogin } from "../models/user";
+import {
+  hashPassword,
+  verifyPassword,
+  createAccessToken,
+} from "../utils/auth_helpers";
 
-// Signup
-router.post('/signup', async (req: Request, res: Response) => {
-    try {
-        const { email, password, name } = req.body;
-        const existing = await User.findOne({ email });
-        if (existing) return res.status(400).json({ error: 'Email already exists' });
-        const hashed = await hashPassword(password);
-        const user = await User.create({ email, password: hashed, name });
-        const token = createJWT(user);
-        res.json({ token, user: { id: user._id, email: user.email, name: user.name } });
-    } catch (err) {
-        res.status(500).json({ error: 'Signup failed' });
+const router = express.Router();
+
+/* =========================
+   SIGNUP
+========================= */
+
+router.post("/signup", async (req, res) => {
+  try {
+    const user: UserSignup = req.body;
+
+    const existingUser = await User.findOne({
+      email: user.email,
+    });
+
+    if (existingUser) {
+      return res.status(400).json({
+        detail: "An account with this email already exists.",
+      });
     }
+
+    const newUser = await User.create({
+      username: user.username,
+      email: user.email,
+      password_hash: await hashPassword(user.password),
+    });
+
+    return res.json({
+      message: "User registered successfully",
+      user_id: newUser._id,
+    });
+  } catch (error) {
+    return res.status(500).json({
+      detail: "Internal server error",
+    });
+  }
 });
 
-// Login
-router.post('/login', async (req: Request, res: Response) => {
-    try {
-        const { email, password } = req.body;
-        const user = await User.findOne({ email });
-        if (!user) return res.status(401).json({ error: 'Invalid credentials' });
-        const valid = await verifyPassword(password, user.password);
-        if (!valid) return res.status(401).json({ error: 'Invalid credentials' });
-        const token = createJWT(user);
-        res.json({ token, user: { id: user._id, email: user.email, name: user.name } });
-    } catch (err) {
-        res.status(500).json({ error: 'Login failed' });
-    }
-});
+/* =========================
+   LOGIN
+========================= */
 
-// Auth middleware
-import jwt from 'jsonwebtoken';
-const JWT_SECRET = process.env.JWT_SECRET || 'changeme';
-const authMiddleware = (req: Request, res: Response, next: Function) => {
-    const auth = req.headers.authorization;
-    if (!auth) return res.status(401).json({ error: 'No token' });
-    try {
-        const token = auth.split(' ')[1];
-        const payload = jwt.verify(token, JWT_SECRET) as any;
-        (req as any).user = payload;
-        next();
-    } catch {
-        res.status(401).json({ error: 'Invalid token' });
-    }
-};
+router.post("/login", async (req, res) => {
+  try {
+    const user: UserLogin = req.body;
 
-// Get profile
-router.get('/me', authMiddleware, async (req: Request, res: Response) => {
-    const userId = (req as any).user.id;
-    const user = await User.findById(userId).select('-password');
-    if (!user) return res.status(404).json({ error: 'User not found' });
-    res.json(user);
+    const dbUser = await User.findOne({
+      email: user.email,
+    });
+
+    if (
+      !dbUser ||
+      !(await verifyPassword(user.password, dbUser.password_hash))
+    ) {
+      return res.status(401).json({
+        detail: "Invalid email or password.",
+      });
+    }
+
+    const token = createAccessToken({
+      user_id: dbUser._id.toString(),
+      username: dbUser.username,
+    });
+
+    res.cookie("access_token", token, {
+      httpOnly: true,
+      secure: true,
+      sameSite: "strict",
+      maxAge: 86400 * 1000,
+    });
+
+    return res.json({
+      message: "Login successful",
+      user_id: dbUser._id,
+      token_type: "bearer",
+    });
+  } catch (error) {
+    return res.status(500).json({
+      detail: "Internal server error",
+    });
+  }
 });
 
 export default router;

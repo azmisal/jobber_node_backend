@@ -1,21 +1,47 @@
-import { User, IUser } from './user';
-import jwt from 'jsonwebtoken';
-import bcrypt from 'bcryptjs';
+// src/models/user.model.ts
 
-const JWT_SECRET = process.env.JWT_SECRET || 'changeme';
+import mongoose, { Schema, Document } from "mongoose";
 
-export const hashPassword = async (password: string) => {
-    return await bcrypt.hash(password, 10);
-};
+export interface IUser extends Document {
+  username: string;
+  email: string;
+  password: string;
+}
 
-export const verifyPassword = async (password: string, hash: string) => {
-    return await bcrypt.compare(password, hash);
-};
+export interface IUserLogin {
+  email: string;
+  password: string;
+}
 
-export const createJWT = (user: IUser) => {
-    return jwt.sign({ id: user._id, email: user.email }, JWT_SECRET, { expiresIn: '7d' });
-};
+export interface ITokenData {
+  user_id: string;
+  username: string;
+}
 
-export const verifyJWT = (token: string) => {
-    return jwt.verify(token, JWT_SECRET);
-};
+const UserSchema = new Schema<IUser>(
+  {
+    username: {
+      type: String,
+      required: true,
+      trim: true,
+    },
+
+    email: {
+      type: String,
+      required: true,
+      unique: true,
+      lowercase: true,
+      trim: true,
+    },
+
+    password: {
+      type: String,
+      required: true,
+    },
+  },
+  {
+    timestamps: true,
+  }
+);
+
+export default mongoose.model<IUser>("User", UserSchema);
