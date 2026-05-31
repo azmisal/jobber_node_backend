@@ -21,16 +21,31 @@ const app = express();
 // MIDDLEWARE
 // =========================================================
 
+const ALLOWED_ORIGINS = [
+  "http://localhost:8080",
+  "http://127.0.0.1:8080",
+  "https://jobber.azmisal.in",
+];
+
 app.use(
   cors({
-    origin: [
-      "http://localhost:8080",
-      "http://127.0.0.1:8080",
-      "https://jobber.azmisal.in",
-    ],
+    origin: (origin, callback) => {
+      if (!origin) return callback(null, true);
+
+      const isAllowed =
+        ALLOWED_ORIGINS.includes(origin) ||
+        origin.endsWith(".vercel.app") ||
+        origin.endsWith(".azmisal.in");
+
+      if (isAllowed) {
+        callback(null, true);
+      } else {
+        callback(new Error("Not allowed by CORS"));
+      }
+    },
     credentials: true,
     methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
-    allowedHeaders: ["Content-Type", "Authorization"],
+    allowedHeaders: ["Content-Type", "Authorization", "Cookie"],
   })
 );
 
