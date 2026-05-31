@@ -1,68 +1,156 @@
-import { Router, Request, Response } from 'express';
-import { Resume } from '../models/resume';
-import jwt from 'jsonwebtoken';
+import express from "express";
+import multer from "multer";
 
-const router = Router();
-const JWT_SECRET = process.env.JWT_SECRET || 'changeme';
-const authMiddleware = (req: Request, res: Response, next: Function) => {
-    const auth = req.headers.authorization;
-    if (!auth) return res.status(401).json({ error: 'No token' });
+import Profile from "../models/profile";
+
+import {
+  extractResumePdfContext,
+  enrich_resume_data_with_pdf_context as enrichResumeDataWithPdfContext,
+} from "../utils/pdf_parser";
+
+import {
+  canonicalize_resume_data as canonicalizeResumeData,
+   cleanupResumeData,
+} from "../utils/resume_quality";
+
+import { getCurrentUser } from "../utils/auth_helpers";
+
+import { uploadPdf } from "../services/cloudinary_service";
+import { parseResumeToJson } from "../services/llm_service";
+
+import { upsertProfile } from "../utils/profile_upsert";
+
+const router = express.Router();
+
+const upload = multer();
+
+/* =========================
+   UPLOAD RESUME
+========================= */
+
+router.post(
+  "/upload",
+  getCurrentUser,
+  upload.single("file"),
+  async (req: any, res) => {
     try {
-        const token = auth.split(' ')[1];
-        const payload = jwt.verify(token, JWT_SECRET) as any;
-        (req as any).user = payload;
-        next();
-    } catch {
-        res.status(401).json({ error: 'Invalid token' });
-    }
-};
+      const file = req.file;
+      const model = req.body.model || "groq";
 
-// Create resume
-router.post('/', authMiddleware, async (req: Request, res: Response) => {
+      if (!file) {
+        return res.status(400).json({
+          detail: "No file uploaded",
+        });
+      }
+
+      const fileBytes = file.buffer;
+
+      const cloudinaryUrl = await uploadPdf(
+        fileBytes,
+        `master_${req.user.user_id}`
+      );
+
+      const pdfContext = await extractResumePdfContext(fileBytes);
+
+      let parsedJson = await parseResumeToJson(
+        pdfContext.plain_text,
+        model,
+        pdfContext.contact_details?.links || []
+      );
+      // Merge PDF + LLM output using the robust helper functions
+      parsedJson = enrichResumeDataWithPdfContext(parsedJson, pdfContext);
+      parsedJson = cleanupResumeData(parsedJson);
+
+      const upserted = await upsertProfile({
+        user_id: req.user.user_id,
+        username: req.user.username,
+        resumeUrl: cloudinaryUrl,
+        profileData: parsedJson,
+      });
+
+      return res.json({
+        message: "Resume uploaded and learned.",
+        profile: upserted ? (upserted.profileData || parsedJson) : parsedJson,
+      });
+    } catch (error: any) {
+      console.error("Upload error:", error);
+      return res.status(500).json({
+        detail: error.message || "Internal server error",
+      });
+    }
+  }
+);
+
+/* =========================
+   GET PROFILE
+========================= */
+
+router.get(
+  "/profile",
+  getCurrentUser,
+  async (req: any, res) => {
     try {
-        const userId = (req as any).user.id;
-        const { content } = req.body;
-        const resume = await Resume.create({ user: userId, content });
-        res.json(resume);
-    } catch (err) {
-        res.status(500).json({ error: 'Create failed' });
+      const profile: any = await Profile.findOne({
+        user_id: req.user.user_id,
+      });
+
+      if (!profile) {
+        return res.json({
+          has_profile: false,
+        });
+      }
+
+      return res.json({
+        has_profile: true,
+        data: profile.profileData || profile.parsed_resume_data,
+        resumeUrl: profile.resumeUrl || profile.cloudinary_url,
+      });
+    } catch (error) {
+      return res.status(500).json({
+        detail: "Internal server error",
+      });
     }
-});
+  }
+);
 
-// Get all resumes for user
-router.get('/', authMiddleware, async (req: Request, res: Response) => {
-    const userId = (req as any).user.id;
-    const resumes = await Resume.find({ user: userId });
-    res.json(resumes);
-});
+/* =========================
+   RECTIFY PROFILE
+========================= */
 
-// Get single resume
-router.get('/:id', authMiddleware, async (req: Request, res: Response) => {
-    const userId = (req as any).user.id;
-    const resume = await Resume.findOne({ _id: req.params.id, user: userId });
-    if (!resume) return res.status(404).json({ error: 'Not found' });
-    res.json(resume);
-});
+router.put(
+  "/rectify",
+  getCurrentUser,
+  async (req: any, res) => {
+    try {
+      const updatedData = req.body;
 
-// Update resume
-router.put('/:id', authMiddleware, async (req: Request, res: Response) => {
-    const userId = (req as any).user.id;
-    const { content } = req.body;
-    const resume = await Resume.findOneAndUpdate(
-        { _id: req.params.id, user: userId },
-        { content },
-        { new: true }
-    );
-    if (!resume) return res.status(404).json({ error: 'Not found' });
-    res.json(resume);
-});
+      const cleanedData = canonicalizeResumeData(updatedData);
 
-// Delete resume
-router.delete('/:id', authMiddleware, async (req: Request, res: Response) => {
-    const userId = (req as any).user.id;
-    const result = await Resume.findOneAndDelete({ _id: req.params.id, user: userId });
-    if (!result) return res.status(404).json({ error: 'Not found' });
-    res.json({ success: true });
-});
+      const existing: any = await Profile.findOne({
+        user_id: req.user.user_id,
+      });
+
+      const resumeUrl =
+        existing?.resumeUrl ||
+        existing?.cloudinary_url ||
+        "";
+
+      await upsertProfile({
+        user_id: req.user.user_id,
+        username: req.user.username,
+        resumeUrl: resumeUrl,
+        profileData: cleanedData,
+      });
+
+      return res.json({
+        message: "Profile updated and verified successfully",
+      });
+    } catch (error) {
+      return res.status(500).json({
+        detail: "Internal server error",
+      });
+    }
+  }
+);
 
 export default router;
