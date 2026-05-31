@@ -15,6 +15,11 @@ if (!DB_NAME) {
 }
 
 export const connectDB = async (): Promise<void> => {
+  if (mongoose.connection.readyState >= 1) {
+    console.log("Using cached MongoDB connection");
+    return;
+  }
+
   try {
     await mongoose.connect(MONGO_URI, {
       dbName: DB_NAME,
@@ -23,6 +28,6 @@ export const connectDB = async (): Promise<void> => {
     console.log("MongoDB connected");
   } catch (error) {
     console.error("MongoDB connection error:", error);
-    process.exit(1);
+    throw error;
   }
 };
