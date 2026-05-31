@@ -1,16 +1,14 @@
-import { Collection, ObjectId } from "mongodb";
+import mongoose from "mongoose";
+import Profile from "../models/profile";
+import User from "../models/users";
 
-export async function upsertProfile(
-  profilesCol: Collection,
-  usersCol: Collection,
-  params: {
-    user_id: string;
-    username: string;
-    resumeUrl: string;
-    profileData: Record<string, any>;
-    userEmail?: string | null;
-  }
-): Promise<any> {
+export async function upsertProfile(params: {
+  user_id: string;
+  username: string;
+  resumeUrl: string;
+  profileData: Record<string, any>;
+  userEmail?: string | null;
+}) {
   const { user_id, username, resumeUrl, profileData } = params;
 
   let userEmail = params.userEmail ?? "";
@@ -20,48 +18,59 @@ export async function upsertProfile(
   // FETCH EMAIL IF NOT PROVIDED
   // =====================================================
   if (!userEmail) {
-    const userDoc =
-      (await usersCol.findOne({ _id: user_id })) ||
-      (await usersCol.findOne({ user_id }));
+    const filterOr: any[] = [];
 
-    if (userDoc?.email) {
-      userEmail = userDoc.email;
+    // Check if user_id is a valid ObjectId, or match on a custom field if present
+    if (mongoose.Types.ObjectId.isValid(user_id)) {
+      filterOr.push({ _id: new mongoose.Types.ObjectId(user_id) });
+    } else {
+      filterOr.push({ user_id });
     }
+
+    const userDoc = await User.findOne({
+      $or: filterOr,
+    });
+
+    userEmail = userDoc?.email || "";
   }
 
-  if (!userEmail) {
-    userEmail = "";
-  }
-
+  // =====================================================
+  // BUILD FILTER
+  // =====================================================
   const filter = { user_id };
 
   // =====================================================
   // CHECK EXISTING
   // =====================================================
-  const existing = await profilesCol.findOne(filter);
+  const existing = await Profile.findOne(filter);
 
   const createdAt = existing?.createdAt ?? now;
 
   // =====================================================
-  // UPSERT OPERATION
+  // UPSERT
   // =====================================================
-  await profilesCol.updateOne(filter, {
-    $set: {
-      userEmail,
-      username,
-      resumeUrl,
-      profileData,
-      updatedAt: now,
+  await Profile.updateOne(
+    filter,
+    {
+      $set: {
+        userEmail,
+        username,
+        resumeUrl,
+        cloudinary_url: resumeUrl, // compatibility
+        profileData,
+        parsed_resume_data: profileData, // compatibility
+        updatedAt: now,
+      },
+      $setOnInsert: {
+        user_id,
+        createdAt,
+      },
     },
-    $setOnInsert: {
-      createdAt,
-    },
-  }, {
-    upsert: true,
-  });
+    { upsert: true }
+  );
 
   // =====================================================
   // RETURN UPDATED DOC
   // =====================================================
-  return await profilesCol.findOne(filter);
+  return await Profile.findOne(filter);
 }

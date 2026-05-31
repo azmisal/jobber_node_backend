@@ -140,10 +140,7 @@ const ResumeBasicsSchema = new Schema<IResumeBasics>(
       default: "",
     },
 
-    links: {
-      type: [Schema.Types.Mixed],
-      default: [],
-    },
+    links: [Schema.Types.Mixed],
   },
   {
     _id: false,
@@ -168,10 +165,7 @@ const ResumeSectionSchema = new Schema<IResumeSection>(
       required: true,
     },
 
-    content: {
-      type: [Schema.Types.Mixed],
-      default: [],
-    },
+    content: [Schema.Types.Mixed],
 
     raw_text: {
       type: String,

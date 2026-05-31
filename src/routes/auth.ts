@@ -1,12 +1,14 @@
 // src/routes/auth.routes.ts
 
 import express from "express";
-import User, { UserSignup, UserLogin } from "../models/user";
+import Users, { UserSignup, UserLogin } from "../models/users";
 import {
   hashPassword,
   verifyPassword,
   createAccessToken,
+  createRefreshToken,
 } from "../utils/auth_helpers";
+import mongoose from "mongoose";
 
 const router = express.Router();
 
@@ -18,7 +20,7 @@ router.post("/signup", async (req, res) => {
   try {
     const user: UserSignup = req.body;
 
-    const existingUser = await User.findOne({
+    const existingUser = await Users.findOne({
       email: user.email,
     });
 
@@ -28,7 +30,7 @@ router.post("/signup", async (req, res) => {
       });
     }
 
-    const newUser = await User.create({
+    const newUser = await Users.create({
       username: user.username,
       email: user.email,
       password_hash: await hashPassword(user.password),
@@ -52,11 +54,9 @@ router.post("/signup", async (req, res) => {
 router.post("/login", async (req, res) => {
   try {
     const user: UserLogin = req.body;
-
-    const dbUser = await User.findOne({
+    const dbUser = await Users.findOne({
       email: user.email,
     });
-
     if (
       !dbUser ||
       !(await verifyPassword(user.password, dbUser.password_hash))
@@ -66,12 +66,16 @@ router.post("/login", async (req, res) => {
       });
     }
 
-    const token = createAccessToken({
+    const accessToken = createAccessToken({
+      user_id: dbUser._id.toString(),
+      username: dbUser.username,
+    });
+     const refreshToken = createRefreshToken({
       user_id: dbUser._id.toString(),
       username: dbUser.username,
     });
 
-    res.cookie("access_token", token, {
+    res.cookie("refreshToken", refreshToken, {
       httpOnly: true,
       secure: true,
       sameSite: "strict",
@@ -81,7 +85,7 @@ router.post("/login", async (req, res) => {
     return res.json({
       message: "Login successful",
       user_id: dbUser._id,
-      token_type: "bearer",
+      token: accessToken,
     });
   } catch (error) {
     return res.status(500).json({
@@ -89,5 +93,7 @@ router.post("/login", async (req, res) => {
     });
   }
 });
+
+
 
 export default router;

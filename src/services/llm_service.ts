@@ -1,7 +1,7 @@
 // src/services/llm.service.ts
 
 import OpenAI from "openai";
-import { v4 as uuidv4 } from "uuid";
+import { randomUUID } from "crypto";
 
 import {
   RESUME_PARSE_PROMPT,
@@ -133,7 +133,7 @@ ${rawText}
 
   for (const section of parsed.sections) {
     if (!section.id) {
-      section.id = uuidv4();
+      section.id = randomUUID();
     }
   }
 

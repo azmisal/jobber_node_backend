@@ -1,5 +1,3 @@
-// src/services/cloudinary.service.ts
-
 import { v2 as cloudinary } from "cloudinary";
 
 cloudinary.config({
@@ -16,17 +14,20 @@ export const uploadPdf = async (
     const stream = cloudinary.uploader.upload_stream(
       {
         resource_type: "raw",
-        public_id: `resumes/${filename}.pdf`,
-        type: "upload",
-        access_mode: "public",
+        public_id: `resumes/${filename}`,
         invalidate: true,
       },
       (error, result) => {
         if (error) {
+          console.error("Cloudinary error:", error);
           return reject(error);
         }
 
-        resolve(result?.secure_url || "");
+        if (!result) {
+          return reject(new Error("Upload failed"));
+        }
+
+        resolve(result.secure_url);
       }
     );
 

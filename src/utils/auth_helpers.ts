@@ -7,7 +7,8 @@ import { Request, Response, NextFunction } from "express";
 /* =====================================================
    PASSWORD HELPERS
 ===================================================== */
-const JWT_SECRET: string = process.env.JWT_SECRET || "dev_secret";
+const JWT_ACCESS_SECRET: string = process.env.JWT_ACCESS_SECRET || "dev_secret";
+const JWT_REFRESH_SECRET: string = process.env.JWT_REFRESH_SECRET || "dev_refresh_secret";
 
 
 
@@ -32,64 +33,43 @@ export const verifyPassword = async (
 ===================================================== */
 
 export function createAccessToken(payload: any) {
-  return jwt.sign(
-    payload,
-    JWT_SECRET,
-    {
-      expiresIn: "60m" as const, // 🔥 IMPORTANT FIX
-    }
-  );
+  return jwt.sign(payload, JWT_ACCESS_SECRET, {
+    expiresIn: 60 * 60, // 1 hour in seconds (SAFE with TS)
+  });
 }
+export function createRefreshToken(payload: any) {
+  return jwt.sign(payload, JWT_REFRESH_SECRET, {
+    expiresIn: 60 * 60 * 24 * 30 * 12, // 1 year in seconds (SAFE with TS)
+  });
+}
+
+
 
 /* =====================================================
    AUTH MIDDLEWARE
 ===================================================== */
-  
+
+
 export const getCurrentUser = (
-  req: Request,
+  req: any,
   res: Response,
   next: NextFunction
 ) => {
   try {
-    let token: string | undefined;
+    const authHeader = req.headers.authorization;
 
-    // Bearer token
-    const authHeader =
-      req.headers.authorization;
-
-    if (
-      authHeader &&
-      authHeader.startsWith("Bearer ")
-    ) {
-      token = authHeader.split(" ")[1];
-    }
-
-    // Cookie fallback
-    if (!token && req.cookies?.access_token) {
-      token = req.cookies.access_token;
-    }
+    const token =
+      authHeader?.startsWith("Bearer ")
+        ? authHeader.split(" ")[1]
+        : req.cookies?.access_token;
 
     if (!token) {
       return res.status(401).json({
-        detail:
-          "Could not validate active session credentials.",
+        detail: "Missing authentication token",
       });
     }
 
-    const decoded = jwt.verify(
-      token,
-      process.env.JWT_SECRET as string
-    ) as any;
-
-    if (
-      !decoded.user_id ||
-      !decoded.username
-    ) {
-      return res.status(401).json({
-        detail:
-          "Could not validate active session credentials.",
-      });
-    }
+    const decoded = jwt.verify(token, JWT_ACCESS_SECRET) as any;
 
     req.user = {
       user_id: decoded.user_id,
@@ -97,10 +77,9 @@ export const getCurrentUser = (
     };
 
     next();
-  } catch (error) {
+  } catch (err) {
     return res.status(401).json({
-      detail:
-        "Could not validate active session credentials.",
+      detail: "Invalid or expired token",
     });
   }
 };

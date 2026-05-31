@@ -1,27 +1,23 @@
-import * as html from "node:util";
-import pdf from "pdf-parse";
-
+const pdf = require("pdf-parse");
 // =========================================================
 // REGEX
 // =========================================================
-
 export const EMAIL_RE =
-  /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/i;
+  /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/gi;
 
 export const URL_RE =
-  /(?:(?:https?:\/\/|www\.)[^\s<>()]+|(?<!@)\b(?:linkedin\.com|github\.com)\/[^\s<>()]+|(?<!@)\b[a-z0-9][a-z0-9-]*(?:\.[a-z0-9][a-z0-9-]*)+\.(?:app|co|com|dev|in|io|me|net|org)(?:\/[^\s<>()]*)?)/i;
+  /(?:(?:https?:\/\/|www\.)[^\s<>()]+|(?<!@)\b(?:linkedin\.com|github\.com)\/[^\s<>()]+|(?<!@)\b[a-z0-9][a-z0-9-]*(?:\.[a-z0-9][a-z0-9-]*)+\.(?:app|co|com|dev|in|io|me|net|org)(?:\/[^\s<>()]*)?)/gi;
 
 export const PHONE_RE =
-  /(?<!\w)(?:\+?\d{1,3}[\s.-]?)?(?:\(?\d{2,4}\)?[\s.-]?)?\d{3,4}[\s.-]?\d{4}(?!\w)/;
+  /(?<!\w)(?:\+?\d{1,3}[\s.-]?)?(?:\(?\d{2,4}\)?[\s.-]?)?\d{3,4}[\s.-]?\d{4}(?!\w)/g;
 
 export const SECTION_HEADING_RE =
   /^(summary|profile|objective|experience|work experience|employment|projects?|education|skills?|technical skills|certifications?|awards?|publications?|languages?|achievements?)$/i;
-
 // =========================================================
 // UTILITIES
 // =========================================================
 
-export function normalize_url(url: string): string {
+export function normalizeUrl(url: string): string {
   url = (url || "").trim().replace(/[.,;:]+$/, "");
   if (!url) return "";
 
@@ -69,7 +65,7 @@ export function escape_href(url: string): string {
 }
 
 export function make_anchor(label: string, url: string): string {
-  const href = escape_href(normalize_url(url));
+  const href = escape_href(normalizeUrl(url));
   if (!href) return label;
   return `<a href="${href}">${label}</a>`;
 }
@@ -77,7 +73,7 @@ export function make_anchor(label: string, url: string): string {
 export function classify_link_label(url: string, fallback = ""): string {
   if (fallback) return clean_link_label(fallback);
 
-  const parsed = normalize_url(url).toLowerCase();
+  const parsed = normalizeUrl(url).toLowerCase();
 
   if (parsed.includes("linkedin.com")) return "LinkedIn";
   if (parsed.includes("github.com")) return "GitHub";
@@ -95,7 +91,7 @@ export function link_key(link: any): string {
   return (
     clean_link_label(link?.label || "").toLowerCase() +
     "|" +
-    normalize_url(link?.url || "").toLowerCase()
+    normalizeUrl(link?.url || "").toLowerCase()
   );
 }
 
@@ -106,7 +102,7 @@ export function append_unique_link(
   extra: any = null
 ) {
   label = clean_link_label(label);
-  url = normalize_url(url);
+  url = normalizeUrl(url);
 
   if (!url) return;
 
@@ -118,7 +114,7 @@ export function append_unique_link(
 
   const exists = links.some(
     (l) =>
-      normalize_url(l.url || "").toLowerCase() ===
+      normalizeUrl(l.url || "").toLowerCase() ===
       url.toLowerCase()
   );
 
@@ -148,7 +144,7 @@ export function extract_contacts_from_text(text: string) {
   }
 
   while ((match = URL_RE.exec(text))) {
-    const url = normalize_url(match[0]);
+    const url = normalizeUrl(match[0]);
     append_unique_link(links, classify_link_label(url), url);
   }
 
@@ -182,9 +178,9 @@ export function extract_contact_block(text: string): string {
 export function is_link_in_text(link: any, text: string): boolean {
   const haystack = (text || "").toLowerCase();
   const label = clean_link_label(link?.label || "").toLowerCase();
-  const url = normalize_url(link?.url || "").toLowerCase();
+  const url = normalizeUrl(link?.url || "").toLowerCase();
 
-  return (
+  return !!(
     (label && haystack.includes(label)) ||
     (url && haystack.includes(url))
   );
@@ -224,18 +220,24 @@ export function annotate_links(text: string): string {
 // PDF EXTRACTION
 // =========================================================
 
-export async function extract_resume_pdf_context(
+export async function extractResumePdfContext(
   fileBuffer: Buffer
 ) {
-  const data = await pdf(fileBuffer);
+
+  const data = await Promise.race([
+    pdf(fileBuffer),
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error("PDF parse timeout")), 10000)
+    ),
+  ]);
 
   const raw_text = data.text || "";
 
   if (!raw_text.trim()) {
     throw new Error("Unable to read PDF.");
   }
-
   const contact_block = extract_contact_block(raw_text);
+  
 
   const contact_details = {
     ...extract_contacts_from_text(raw_text),
@@ -243,56 +245,425 @@ export async function extract_resume_pdf_context(
       ...extract_contacts_from_text(contact_block).links,
     ],
   };
-
+  
   return {
     text: raw_text,
     plain_text: raw_text,
     contact_block,
     contact_details,
+    embedded_links: [],
   };
 }
 
-// =========================================================
-// PDF GENERATION (SIMPLIFIED NODE VERSION)
-// =========================================================
+export function merge_contact_details(...sources: any[]): any {
+  const merged: { emails: string[]; phones: string[]; links: any[] } = {
+    emails: [],
+    phones: [],
+    links: [],
+  };
 
-import PDFDocument from "pdfkit";
+  for (const source of sources) {
+    if (typeof source !== "object" || source === null) continue;
 
-export function generate_pdf_bytes(resume_data: any): Buffer {
-  const doc = new PDFDocument();
-  const chunks: Buffer[] = [];
-
-  doc.on("data", (c) => chunks.push(c));
-
-  const basics = resume_data?.basics || {};
-  const sections = resume_data?.sections || [];
-
-  doc.fontSize(20).text(basics.full_name || "", {
-    align: "center",
-  });
-
-  doc.moveDown();
-
-  for (const section of sections) {
-    if (section.title) {
-      doc.fontSize(14).text(section.title.toUpperCase());
-    }
-
-    for (const item of section.content || []) {
-      if (typeof item === "string") {
-        doc.fontSize(10).text(item);
-      } else {
-        if (item.title) doc.text(item.title);
-        for (const b of item.bullets || []) {
-          doc.text("• " + b);
-        }
+    for (const email of as_list(source.emails)) {
+      const trimmed = String(email || "").trim();
+      if (trimmed && !merged.emails.some((e) => e.toLowerCase() === trimmed.toLowerCase())) {
+        merged.emails.push(trimmed);
       }
     }
 
-    doc.moveDown();
+    for (const phone of as_list(source.phones)) {
+      const cleaned = clean_link_label(phone);
+      if (cleaned && !merged.phones.includes(cleaned)) {
+        merged.phones.push(cleaned);
+      }
+    }
+
+    for (const link of as_list(source.links)) {
+      if (typeof link === "object" && link !== null) {
+        append_unique_link(merged.links, link.label || "", link.url || "");
+      }
+    }
   }
 
-  doc.end();
+  return merged;
+}
 
-  return Buffer.concat(chunks);
+export function enrich_resume_data_with_pdf_context(
+  resume_data: any,
+  pdf_context: any
+): any {
+  if (typeof resume_data !== "object" || resume_data === null) {
+    resume_data = {};
+  }
+
+  const basics = resume_data.basics || {};
+  resume_data.basics = basics;
+  const metadata = resume_data.metadata || {};
+  resume_data.metadata = metadata;
+
+  const contacts = pdf_context.contact_details || {};
+  const contact_link_urls = new Set(
+    as_list(contacts.links)
+      .filter((link) => typeof link === "object" && link !== null)
+      .map((link) => normalizeUrl(link.url || "").toLowerCase())
+  );
+
+  const existing_links = as_list(basics.links).filter(
+    (link) =>
+      typeof link === "object" &&
+      link !== null &&
+      contact_link_urls.has(normalizeUrl(link.url || "").toLowerCase())
+  );
+
+  const existing_contacts = {
+    emails: basics.emails || [],
+    phones: basics.phones || [],
+    links: existing_links,
+  };
+
+  const merged_contacts = merge_contact_details(existing_contacts, contacts);
+
+  basics.emails = merged_contacts.emails;
+  basics.phones = merged_contacts.phones;
+  basics.links = merged_contacts.links;
+
+  const embedded_links: any[] = [];
+  for (const link of as_list(metadata.embedded_links)) {
+    if (typeof link === "object" && link !== null) {
+      append_unique_link(embedded_links, link.label || "", link.url || "");
+    }
+  }
+
+  for (const link of as_list(pdf_context.embedded_links)) {
+    if (typeof link === "object" && link !== null) {
+      append_unique_link(embedded_links, link.label || "", link.url || "");
+    }
+  }
+
+  metadata.embedded_links = embedded_links;
+
+  if (pdf_context.plain_text) {
+    metadata.plain_resume_text = pdf_context.plain_text;
+  }
+
+  return resume_data;
+}
+
+// =========================================================
+// PDF GENERATION (ASYNC PDFKIT VERSION)
+// =========================================================
+import PDFDocument from "pdfkit";
+
+function writeDivider(doc: PDFKit.PDFDocument) {
+  const y = doc.y;
+
+  doc
+    .moveTo(50, y)
+    .lineTo(545, y)
+    .strokeColor("#cccccc")
+    .stroke();
+
+  doc.moveDown(0.8);
+}
+
+function writeSectionTitle(
+  doc: PDFKit.PDFDocument,
+  title: string
+) {
+  doc
+    .font("Helvetica-Bold")
+    .fontSize(13)
+    .fillColor("#111")
+    .text(title.toUpperCase(), {
+      align: "left",
+    });
+
+  writeDivider(doc);
+}
+
+function writeBullet(
+  doc: PDFKit.PDFDocument,
+  text: string
+) {
+  if (!text?.trim()) return;
+
+  doc
+    .font("Helvetica")
+    .fontSize(10.5)
+    .fillColor("#222")
+    .text(`• ${text}`, {
+      indent: 14,
+      paragraphGap: 3,
+      lineGap: 1,
+    });
+}
+
+function writeExperienceItem(
+  doc: PDFKit.PDFDocument,
+  item: any
+) {
+  doc
+    .font("Helvetica-Bold")
+    .fontSize(11)
+    .fillColor("#111")
+    .text(
+      `${item.position || ""} ${
+        item.company ? `— ${item.company}` : ""
+      }`,
+      {
+        continued: false,
+      }
+    );
+
+  if (item.dates) {
+    doc
+      .font("Helvetica-Oblique")
+      .fontSize(9.5)
+      .fillColor("#666")
+      .text(item.dates);
+  }
+
+  doc.moveDown(0.3);
+
+  for (const achievement of item.achievements || []) {
+    writeBullet(doc, achievement);
+  }
+
+  doc.moveDown(0.8);
+}
+
+function writeProjectItem(
+  doc: PDFKit.PDFDocument,
+  item: any
+) {
+  doc
+    .font("Helvetica-Bold")
+    .fontSize(11)
+    .fillColor("#111")
+    .text(item.name || "");
+
+  if (item.link) {
+    doc
+      .font("Helvetica-Oblique")
+      .fontSize(9)
+      .fillColor("#666")
+      .text(item.link);
+  }
+
+  if (item.description) {
+    doc
+      .font("Helvetica")
+      .fontSize(10)
+      .fillColor("#222")
+      .text(item.description, {
+        lineGap: 2,
+      });
+  }
+
+  doc.moveDown(0.8);
+}
+
+function writeEducationItem(
+  doc: PDFKit.PDFDocument,
+  item: any
+) {
+  doc
+    .font("Helvetica-Bold")
+    .fontSize(11)
+    .fillColor("#111")
+    .text(item.degree || "");
+
+  doc
+    .font("Helvetica")
+    .fontSize(10)
+    .fillColor("#222")
+    .text(item.institution || "");
+
+  if (item.cgpa) {
+    doc
+      .font("Helvetica-Oblique")
+      .fontSize(9)
+      .fillColor("#666")
+      .text(`CGPA: ${item.cgpa}`);
+  }
+
+  doc.moveDown(0.8);
+}
+
+function writeSkillsSection(
+  doc: PDFKit.PDFDocument,
+  skills: string[]
+) {
+  doc
+    .font("Helvetica")
+    .fontSize(10.5)
+    .fillColor("#222")
+    .text(skills.join(" • "), {
+      lineGap: 4,
+    });
+
+  doc.moveDown(0.8);
+}
+
+export function generatePdfBytes(
+  resume_data: any
+): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    try {
+      const doc = new PDFDocument({
+        margin: 50,
+        size: "A4",
+      });
+
+      const chunks: Buffer[] = [];
+
+      doc.on("data", (c: Buffer) =>
+        chunks.push(c)
+      );
+
+      doc.on("end", () => {
+        resolve(Buffer.concat(chunks));
+      });
+
+      doc.on("error", reject);
+
+      const basics =
+        resume_data?.basics || {};
+
+      const sections =
+        resume_data?.sections || [];
+
+      // =====================================================
+      // HEADER
+      // =====================================================
+
+      doc
+        .font("Helvetica-Bold")
+        .fontSize(22)
+        .fillColor("#111")
+        .text(basics.full_name || "", {
+          align: "center",
+        });
+
+      doc.moveDown(0.3);
+
+      const contactParts = [
+        ...(basics.emails || []),
+        ...(basics.phones || []),
+        basics.location,
+      ].filter(Boolean);
+
+      doc
+        .font("Helvetica")
+        .fontSize(10)
+        .fillColor("#555")
+        .text(contactParts.join(" | "), {
+          align: "center",
+        });
+
+      doc.moveDown(1.2);
+
+      // =====================================================
+      // SECTIONS
+      // =====================================================
+
+      for (const section of sections) {
+        if (
+          !section ||
+          !Array.isArray(section.content)
+        ) {
+          continue;
+        }
+
+        writeSectionTitle(
+          doc,
+          section.title || "Section"
+        );
+
+        // SUMMARY / TEXT
+        if (
+          section.type === "text" ||
+          section.id === "summary"
+        ) {
+          for (const item of section.content) {
+            doc
+              .font("Helvetica")
+              .fontSize(10.5)
+              .fillColor("#222")
+              .text(String(item), {
+                lineGap: 3,
+              });
+          }
+
+          doc.moveDown(1);
+          continue;
+        }
+
+        // EXPERIENCE
+        if (
+          section.type === "experience"
+        ) {
+          for (const item of section.content) {
+            writeExperienceItem(doc, item);
+          }
+
+          continue;
+        }
+
+        // PROJECTS
+        if (
+          section.type === "projects"
+        ) {
+          for (const item of section.content) {
+            writeProjectItem(doc, item);
+          }
+
+          continue;
+        }
+
+        // EDUCATION
+        if (
+          section.type === "education"
+        ) {
+          for (const item of section.content) {
+            writeEducationItem(doc, item);
+          }
+
+          continue;
+        }
+
+        // SKILLS
+        if (
+          section.type === "skills"
+        ) {
+          writeSkillsSection(
+            doc,
+            section.content
+          );
+
+          continue;
+        }
+
+        // FALLBACK
+        for (const item of section.content) {
+          if (typeof item === "string") {
+            writeBullet(doc, item);
+            continue;
+          }
+
+          doc
+            .font("Helvetica")
+            .fontSize(10)
+            .text(JSON.stringify(item));
+        }
+
+        doc.moveDown(1);
+      }
+
+      doc.end();
+    } catch (err) {
+      reject(err);
+    }
+  });
 }

@@ -1,4 +1,4 @@
-import { v4 as uuidv4 } from "uuid";
+import { randomUUID } from "crypto";
 
 // =========================================================
 // REGEX
@@ -176,7 +176,7 @@ function merge_basics(...sources: any[]): any {
   };
 
   for (const source of sources) {
-    if (typeof source !== "object") continue;
+    if (typeof source !== "object" || source === null) continue;
 
     for (const [target, aliases] of Object.entries(BASIC_ALIASES)) {
       if (basics[target]) continue;
@@ -191,9 +191,9 @@ function merge_basics(...sources: any[]): any {
     basics.links.push(
       ...normalize_links(
         source.links ||
-          source.urls ||
-          source.profiles ||
-          source.websites
+        source.urls ||
+        source.profiles ||
+        source.websites
       )
     );
 
@@ -221,17 +221,21 @@ function merge_basics(...sources: any[]): any {
 // =========================================================
 
 function normalize_content_item(item: any): any {
-  if (item == null || item === "") return null;
-
+  if (item == null || item === "") {
+    return null;
+  }
   if (typeof item === "string" || typeof item === "number" || typeof item === "boolean") {
     return clean_text(item);
-  }
-
-  if (Array.isArray(item)) {
+  } if (Array.isArray(item)) {
     return item.map(normalize_content_item).filter(Boolean);
-  }
-
-  if (typeof item === "object") {
+  } if (typeof item === "object") {
+    // Preserve links properly 
+    if (("url" in item || "href" in item) && ("label" in item || "title" in item || "name" in item)) {
+      return {
+        label: clean_text(item.label || item.title || item.name || ""),
+        url: clean_text(item.url || item.href || ""),
+      };
+    }
     const out: any = {};
     for (const [k, v] of Object.entries(item)) {
       const nv = normalize_content_item(v);
@@ -241,9 +245,9 @@ function normalize_content_item(item: any): any {
     }
     return out;
   }
-
   return clean_text(item);
 }
+
 
 function normalize_section_content(value: any): any[] {
   if (!value) return [];
@@ -268,12 +272,12 @@ function normalize_section(section: any, fallback_title = "Custom"): any | null 
     const content = normalize_section_content(section);
     return content.length
       ? {
-          id: uuidv4(),
-          title: fallback_title,
-          type: normalize_title(fallback_title) || "custom",
-          content,
-          raw_text: "",
-        }
+        id: randomUUID(),
+        title: fallback_title,
+        type: normalize_title(fallback_title) || "custom",
+        content,
+        raw_text: "",
+      }
       : null;
   }
 
@@ -281,22 +285,42 @@ function normalize_section(section: any, fallback_title = "Custom"): any | null 
   const type = clean_text(section.type || normalize_title(title) || "custom");
 
   const content_value =
-    section.content ??
-    section.items ??
-    section.entries ??
-    section.details;
+    section.content !== undefined ? section.content :
+      section.items !== undefined ? section.items :
+        section.entries !== undefined ? section.entries :
+          section.details;
 
   const content = normalize_section_content(content_value);
 
   return content.length || section.raw_text
     ? {
-        id: clean_text(section.id) || uuidv4(),
-        title,
-        type,
-        content,
-        raw_text: clean_text(section.raw_text || section.rawText || ""),
-      }
+      id: clean_text(section.id) || randomUUID(),
+      title,
+      type,
+      content,
+      raw_text: clean_text(section.raw_text || section.rawText || ""),
+    }
     : null;
+}
+
+function maybe_unwrap_resume_payload(data: any): any {
+  if (typeof data !== "object" || data === null) {
+    return {};
+  }
+
+  for (const key of ["resume", "resume_data", "resumeData", "data", "profile"]) {
+    const value = data[key];
+
+    if (
+      typeof value === "object" &&
+      value !== null &&
+      (value.sections || value.basics || Object.keys(value).some((k) => k in SECTION_ALIASES))
+    ) {
+      return value;
+    }
+  }
+
+  return data;
 }
 
 // =========================================================
@@ -308,14 +332,14 @@ export function canonicalize_resume_data(resume_data: any, raw_text = ""): any {
     resume_data = { sections: resume_data };
   }
 
-  const data = JSON.parse(JSON.stringify(resume_data));
+  const data = maybe_unwrap_resume_payload(JSON.parse(JSON.stringify(resume_data)));
 
   const basics_sources: any[] = [];
 
-  if (typeof data.basics === "object") basics_sources.push(data.basics);
+  if (typeof data.basics === "object" && data.basics !== null) basics_sources.push(data.basics);
 
   for (const key of CONTACT_KEYS) {
-    if (typeof data[key] === "object") basics_sources.push(data[key]);
+    if (typeof data[key] === "object" && data[key] !== null) basics_sources.push(data[key]);
   }
 
   basics_sources.push(data);
@@ -329,9 +353,41 @@ export function canonicalize_resume_data(resume_data: any, raw_text = ""): any {
     if (norm) sections.push(norm);
   }
 
+  // Also collect extra keys from the root object that represent sections
+  for (const [key, value] of Object.entries(data)) {
+    if (CORE_KEYS.has(key) || CONTACT_KEYS.has(key)) continue;
+
+    const isBasicAlias = Object.values(BASIC_ALIASES).some((aliases) => aliases.includes(key));
+    if (isBasicAlias) continue;
+
+    if (
+      [
+        "email",
+        "emails",
+        "phone",
+        "phones",
+        "mobile",
+        "linkedin",
+        "github",
+        "portfolio",
+        "website",
+        "links",
+        "urls",
+        "profiles",
+        "websites",
+      ].includes(key)
+    ) {
+      continue;
+    }
+
+    const fallback_title = SECTION_ALIASES[key] || humanize_key(key);
+    const norm = normalize_section(value, fallback_title);
+    if (norm) sections.push(norm);
+  }
+
   const metadata = data.metadata || {};
 
-  return {
+  const canonical = {
     basics,
     sections,
     metadata: {
@@ -342,4 +398,140 @@ export function canonicalize_resume_data(resume_data: any, raw_text = ""): any {
     },
     raw_resume_text: clean_text(data.raw_resume_text || data.rawText || raw_text || ""),
   };
+
+  return cleanupResumeData(canonical);
+}
+
+// =========================================================
+// CLEANUP & DEDUPLICATION HELPERS
+// =========================================================
+
+export function is_project_section(section: any): boolean {
+  const title = String(section?.title || "");
+  const section_type = String(section?.type || "");
+  return PROJECT_TITLE_RE.test(title) || PROJECT_TITLE_RE.test(section_type);
+}
+
+export function item_fingerprint(item: any): string {
+  if (typeof item === "object" && item !== null) {
+    const parts: string[] = [];
+
+    for (const key of [
+      "title",
+      "name",
+      "subtitle",
+      "company",
+      "organization",
+      "institution",
+      "role",
+    ]) {
+      const value = clean_text(item[key]);
+
+      if (value) {
+        parts.push(value.toLowerCase());
+      }
+    }
+
+    if (parts.length > 0) {
+      return parts.join("|");
+    }
+  }
+
+  let serialized = JSON.stringify(item);
+
+  serialized = serialized
+    .replace(/[^a-zA-Z0-9]+/g, " ")
+    .toLowerCase();
+
+  return clean_text(serialized).slice(0, 240);
+}
+
+export function merge_unique_content(target: any, source: any): void {
+  const target_content = target.content || [];
+  target.content = target_content;
+  const source_content = source?.content || [];
+
+  if (!Array.isArray(target_content) || !Array.isArray(source_content)) {
+    return;
+  }
+
+  const seen = new Set<string>();
+  for (const item of target_content) {
+    const fp = item_fingerprint(item);
+    if (fp) seen.add(fp);
+  }
+
+  for (const item of source_content) {
+    const fp = item_fingerprint(item);
+
+    if (fp && seen.has(fp)) {
+      continue;
+    }
+
+    target_content.push(item);
+
+    if (fp) {
+      seen.add(fp);
+    }
+  }
+
+  const raw_text = clean_text(source?.raw_text || "");
+
+  if (raw_text && !clean_text(target.raw_text || "").includes(raw_text)) {
+    target.raw_text = clean_text(`${target.raw_text || ""}\n${raw_text}`);
+  }
+}
+
+export function normalize_text_fields(value: any): any {
+  if (typeof value === "string") {
+    return clean_text(value);
+  }
+  if (Array.isArray(value)) {
+    return value.map(normalize_text_fields);
+  }
+  if (typeof value === "object" && value !== null) {
+    const res: any = {};
+    for (const [key, child] of Object.entries(value)) {
+      res[key] = normalize_text_fields(child);
+    }
+
+    return res;
+  }
+  return value;
+}
+
+export function cleanupResumeData(resume_data: any): any {
+  if (typeof resume_data !== "object" || resume_data === null) {
+    return {};
+  }
+  const cleaned = normalize_text_fields(JSON.parse(JSON.stringify(resume_data)));
+  const sections = cleaned.sections || [];
+  if (!Array.isArray(sections)) {
+    cleaned.sections = [];
+    return cleaned;
+  }
+  const normalized_sections: any[] = [];
+  for (const section of sections) {
+    if (typeof section !== "object" || section === null) {
+      continue;
+    }
+    section.id = section.id || randomUUID();
+    section.title = section.title || "Untitled Section";
+    section.type = section.type || "custom";
+    section.content = section.content || [];
+    section.raw_text = section.raw_text || "";
+    if (!section.content.length && !section.raw_text) {
+      continue;
+    }
+    // Preserve project sections exactly 
+    if (is_project_section(section)) {
+      section.title = "Projects"; section.type = "projects";
+    }
+    normalized_sections.push(section);
+  }
+  cleaned.sections = normalized_sections;
+  const metadata = cleaned.metadata || {};
+  cleaned.metadata = metadata;
+  metadata.section_order = normalized_sections.map((s) => s.id).filter(Boolean);
+  return cleaned;
 }

@@ -1,25 +1,25 @@
 import express from "express";
 import { Types } from "mongoose";
 
-import Profile from "../models/profile.model";
-import History from "../models/history.model";
+import Profile from "../models/profile";
+import History from "../models/history";
 
 import {
   extractKeywords,
   generateOptimizationProposals,
   createCoverLetter,
-} from "../services/llm.service";
+} from "../services/llm_service";
 
 import {
-  canonicalizeResumeData,
+  canonicalize_resume_data as canonicalizeResumeData,
   cleanupResumeData,
-} from "../utils/resumeQuality";
+} from "../utils/resume_quality";
 
-import { generatePdfBytes } from "../utils/pdfParser";
-import { uploadPdf } from "../services/cloudinary.service";
-import { extractCompanyNameFromJd } from "../utils/companyExtraction";
+import { generatePdfBytes } from "../utils/pdf_parser";
+import { uploadPdf } from "../services/cloudinary_service";
+import { extractCompanyNameFromJd } from "../utils/company_extraction";
 
-import { getCurrentUser } from "../utils/authHelpers";
+import { getCurrentUser } from "../utils/auth_helpers";
 
 const router = express.Router();
 
@@ -31,7 +31,7 @@ router.post("/keywords", getCurrentUser, async (req: any, res) => {
   try {
     const payload = req.body;
 
-    const profile = await Profile.findOne({
+    const profile: any = await Profile.findOne({
       user_id: req.user.user_id,
     });
 
@@ -41,7 +41,7 @@ router.post("/keywords", getCurrentUser, async (req: any, res) => {
       });
     }
 
-    let resumeData = profile.parsed_resume_data || {};
+    let resumeData = profile.profileData || profile.parsed_resume_data || {};
 
     resumeData = canonicalizeResumeData(resumeData);
 
@@ -96,7 +96,7 @@ router.post("/proposals", getCurrentUser, async (req: any, res) => {
   try {
     const payload = req.body;
 
-    const profile = await Profile.findOne({
+    const profile: any = await Profile.findOne({
       user_id: req.user.user_id,
     });
 
@@ -106,7 +106,7 @@ router.post("/proposals", getCurrentUser, async (req: any, res) => {
       });
     }
 
-    let resumeData = profile.parsed_resume_data || {};
+    let resumeData = profile.profileData || profile.parsed_resume_data || {};
 
     resumeData = canonicalizeResumeData(resumeData);
 
@@ -147,7 +147,7 @@ router.get("/history", getCurrentUser, async (req: any, res) => {
         doc.generatedResumeUrl || "",
     }));
 
-    return res.json({ items });
+    return res.json({ items: result });
   } catch (error) {
     return res.status(500).json({
       detail: "Internal server error",
@@ -189,7 +189,7 @@ router.get(
         doc.sourceResumeProfileId || "";
 
       if (sourceProfileId) {
-        const linkedProfileDoc =
+        const linkedProfileDoc: any =
           await Profile.findOne({
             user_id: req.user.user_id,
           });
@@ -229,11 +229,10 @@ router.get(
 router.post("/apply", getCurrentUser, async (req: any, res) => {
   try {
     const payload = req.body;
-
-    const profile = await Profile.findOne({
+  
+    const profile: any = await Profile.findOne({
       user_id: req.user.user_id,
     });
-
     if (!profile) {
       return res.status(404).json({
         detail: "Resume profile not found.",
@@ -241,7 +240,7 @@ router.post("/apply", getCurrentUser, async (req: any, res) => {
     }
 
     let optimizedResume = {
-      ...(profile.parsed_resume_data || {}),
+      ...(profile.profileData || profile.parsed_resume_data || {}),
     };
 
     optimizedResume =
@@ -258,64 +257,118 @@ router.post("/apply", getCurrentUser, async (req: any, res) => {
     const sections =
       optimizedResume.sections || [];
 
+
     for (const [, prop] of approvedMap) {
       const matchingSection = sections.find(
         (s: any) => s.id === prop.section_id
       );
 
-      if (!matchingSection) continue;
+      if (!matchingSection) {
+        console.log(
+          "Section not found:",
+          prop.section_id
+        );
+        continue;
+      }
 
       const content =
         matchingSection.content || [];
 
-      if (!Array.isArray(content)) continue;
-
-      if (prop.item_index >= content.length)
+      if (!Array.isArray(content)) {
+        console.log(
+          "Section content is not array"
+        );
         continue;
+      }
 
-      const item = content[prop.item_index];
+      const item = content[prop.content_index];
 
-      // STRING CONTENT
+      if (item === undefined) {
+        console.log(
+          "Item not found at index:",
+          prop.content_index
+        );
+        continue;
+      }
+
+      // STRING ITEMS
       if (typeof item === "string") {
-        content[prop.item_index] =
+        console.log("Replacing string item");
+
+        content[prop.content_index] =
           prop.proposed_text;
 
         continue;
       }
 
-      // OBJECT CONTENT
+      // OBJECT ITEMS
       if (
         typeof item === "object" &&
         item !== null
       ) {
-        const fieldValue = item[prop.field];
+        if (!(prop.field in item)) {
+          console.log(
+            "Field does not exist:",
+            prop.field
+          );
+
+          continue;
+        }
+
+        const fieldValue =
+          item[prop.field];
 
         // ARRAY FIELD
-        if (
-          Array.isArray(fieldValue) &&
-          prop.field_index !== undefined &&
-          prop.field_index < fieldValue.length
-        ) {
+        if (Array.isArray(fieldValue)) {
+          if (
+            typeof prop.field_index !==
+            "number" ||
+            prop.field_index < 0 ||
+            prop.field_index >=
+            fieldValue.length
+          ) {
+            console.log(
+              "Invalid field_index:",
+              prop.field_index
+            );
+
+            continue;
+          }
+
+          console.log(
+            "Updating array field"
+          );
+
           fieldValue[prop.field_index] =
             prop.proposed_text;
+
+          continue;
         }
 
         // STRING FIELD
-        else if (
+        if (
           typeof fieldValue === "string"
         ) {
+          console.log(
+            "Updating string field"
+          );
+
           item[prop.field] =
             prop.proposed_text;
+
+          continue;
         }
+
+        console.log(
+          "Unsupported field type"
+        );
       }
     }
-
     optimizedResume =
       cleanupResumeData(optimizedResume);
-
-    const pdfOutputBytes =
-      generatePdfBytes(optimizedResume);
-
+    
+    const finalResumeData = JSON.parse(JSON.stringify(optimizedResume));
+    const pdfOutputBytes = await generatePdfBytes(finalResumeData);
     const uniqueFilename =
       `${payload.output_file_name}_${req.user.user_id}`;
 
@@ -335,7 +388,7 @@ router.post("/apply", getCurrentUser, async (req: any, res) => {
     const currentJd =
       profile.current_jd || "";
 
-    const extractedCompany =
+    const [extractedCompany, confidence] =
       extractCompanyNameFromJd(currentJd);
 
     let companyName =
@@ -387,6 +440,7 @@ router.post("/apply", getCurrentUser, async (req: any, res) => {
       historyId: historyDoc._id,
     });
   } catch (error) {
+    console.error("Apply error:", error);
     return res.status(500).json({
       detail: "Internal server error",
     });

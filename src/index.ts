@@ -1,5 +1,10 @@
+import dotenv from "dotenv";
+dotenv.config();
+
 import express from "express";
 import cors from "cors";
+import cookieParser from "cookie-parser";
+import { connectDB } from "./database/connection";
 
 // Import your routers (you will create these in Express version)
 import authRouter from "./routes/auth";
@@ -29,19 +34,26 @@ app.use(
 );
 
 app.use(express.json());
+app.use(cookieParser());
 
 // =========================================================
 // LIFESPAN (FASTAPI EQUIVALENT)
 // =========================================================
 
-function startServer() {
-  console.log("🚀 NEXUS CV BACKEND ENGINE IS ONLINE!");
-  console.log("📡 Listening at: http://127.0.0.1:8000");
+async function startServer() {
+  console.log("🚀 JOBBER BACKEND ENGINE IS ONLINE!");
+  // console.log("📡 Listening at: http://127.0.0.1:8000");
   const PORT = 8000;
 
-  app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
-  });
+  try {
+    await connectDB();
+    app.listen(PORT, () => {
+      console.log(`Server running on port ${PORT}`);
+    });
+  } catch (err) {
+    console.error("Failed to start server due to database connection error:", err);
+    process.exit(1);
+  }
 }
 
 // =========================================================

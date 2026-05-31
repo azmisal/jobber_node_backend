@@ -1,6 +1,6 @@
 // src/types/express/index.d.ts
 
-export {};
+export { };
 
 declare global {
   namespace Express {

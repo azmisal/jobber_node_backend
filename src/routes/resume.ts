@@ -1,24 +1,24 @@
 import express from "express";
 import multer from "multer";
 
-import Profile from "../models/profile.model";
+import Profile from "../models/profile";
 
 import {
-  enrichResumeDataWithPdfContext,
   extractResumePdfContext,
-} from "../utils/pdfParser";
+  enrich_resume_data_with_pdf_context as enrichResumeDataWithPdfContext,
+} from "../utils/pdf_parser";
 
 import {
-  canonicalizeResumeData,
-  cleanupResumeData,
-} from "../utils/resumeQuality";
+  canonicalize_resume_data as canonicalizeResumeData,
+   cleanupResumeData,
+} from "../utils/resume_quality";
 
-import { getCurrentUser } from "../utils/authHelpers";
+import { getCurrentUser } from "../utils/auth_helpers";
 
-import { uploadPdf } from "../services/cloudinary.service";
-import { parseResumeToJson } from "../services/llm.service";
+import { uploadPdf } from "../services/cloudinary_service";
+import { parseResumeToJson } from "../services/llm_service";
 
-import { upsertProfile } from "../utils/profileUpsert";
+import { upsertProfile } from "../utils/profile_upsert";
 
 const router = express.Router();
 
@@ -35,7 +35,6 @@ router.post(
   async (req: any, res) => {
     try {
       const file = req.file;
-
       const model = req.body.model || "groq";
 
       if (!file) {
@@ -51,39 +50,32 @@ router.post(
         `master_${req.user.user_id}`
       );
 
-      const pdfContext =
-        extractResumePdfContext(fileBytes);
+      const pdfContext = await extractResumePdfContext(fileBytes);
 
       let parsedJson = await parseResumeToJson(
         pdfContext.plain_text,
         model,
-        pdfContext.embedded_links || []
+        pdfContext.contact_details?.links || []
       );
+      // Merge PDF + LLM output using the robust helper functions
+      parsedJson = enrichResumeDataWithPdfContext(parsedJson, pdfContext);
+      parsedJson = cleanupResumeData(parsedJson);
 
-      parsedJson =
-        enrichResumeDataWithPdfContext(
-          parsedJson,
-          pdfContext
-        );
-
-      parsedJson =
-        cleanupResumeData(parsedJson);
-
-      const upserted = await upsertProfile(
-        req.user.user_id,
-        req.user.username,
-        cloudinaryUrl,
-        parsedJson
-      );
+      const upserted = await upsertProfile({
+        user_id: req.user.user_id,
+        username: req.user.username,
+        resumeUrl: cloudinaryUrl,
+        profileData: parsedJson,
+      });
 
       return res.json({
         message: "Resume uploaded and learned.",
-        profile:
-          upserted.profileData || parsedJson,
+        profile: upserted ? (upserted.profileData || parsedJson) : parsedJson,
       });
-    } catch (error) {
+    } catch (error: any) {
+      console.error("Upload error:", error);
       return res.status(500).json({
-        detail: "Internal server error",
+        detail: error.message || "Internal server error",
       });
     }
   }
@@ -98,7 +90,7 @@ router.get(
   getCurrentUser,
   async (req: any, res) => {
     try {
-      const profile = await Profile.findOne({
+      const profile: any = await Profile.findOne({
         user_id: req.user.user_id,
       });
 
@@ -110,14 +102,8 @@ router.get(
 
       return res.json({
         has_profile: true,
-
-        data:
-          profile.profileData ||
-          profile.parsed_resume_data,
-
-        resumeUrl:
-          profile.resumeUrl ||
-          profile.cloudinary_url,
+        data: profile.profileData || profile.parsed_resume_data,
+        resumeUrl: profile.resumeUrl || profile.cloudinary_url,
       });
     } catch (error) {
       return res.status(500).json({
@@ -138,29 +124,26 @@ router.put(
     try {
       const updatedData = req.body;
 
-      const cleanedData =
-        canonicalizeResumeData(updatedData);
+      const cleanedData = canonicalizeResumeData(updatedData);
 
-      const existing =
-        (await Profile.findOne({
-          user_id: req.user.user_id,
-        })) || {};
+      const existing: any = await Profile.findOne({
+        user_id: req.user.user_id,
+      });
 
       const resumeUrl =
-        existing.resumeUrl ||
-        existing.cloudinary_url ||
+        existing?.resumeUrl ||
+        existing?.cloudinary_url ||
         "";
 
-      await upsertProfile(
-        req.user.user_id,
-        req.user.username,
-        resumeUrl,
-        cleanedData
-      );
+      await upsertProfile({
+        user_id: req.user.user_id,
+        username: req.user.username,
+        resumeUrl: resumeUrl,
+        profileData: cleanedData,
+      });
 
       return res.json({
-        message:
-          "Profile updated and verified successfully",
+        message: "Profile updated and verified successfully",
       });
     } catch (error) {
       return res.status(500).json({
