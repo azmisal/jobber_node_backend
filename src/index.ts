@@ -27,8 +27,6 @@ app.use(
       "http://localhost:8080",
       "http://127.0.0.1:8080",
       "https://jobber.azmisal.in",
-      "https://jobber.azmisal.in/login"
-
     ],
     credentials: true,
     methods: ["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS"],
@@ -60,6 +58,19 @@ async function startServer() {
 }
 
 // =========================================================
+// DATABASE MITIGATION MIDDLEWARE FOR SERVERLESS/VERCEL
+// =========================================================
+
+app.use(async (req, res, next) => {
+  try {
+    await connectDB();
+    next();
+  } catch (err) {
+    next(err);
+  }
+});
+
+// =========================================================
 // ROUTES
 // =========================================================
 
@@ -82,4 +93,8 @@ app.get("/", (req, res) => {
 // BOOT SERVER
 // =========================================================
 
-startServer();
+if (!process.env.VERCEL) {
+  startServer();
+}
+
+export default app;
