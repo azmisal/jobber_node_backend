@@ -49,7 +49,7 @@ router.post("/signup", async (req, res) => {
 router.post("/login", async (req, res) => {
 
   try {
-    
+
     const user: UserLogin = req.body;
     const dbUser = await Users.findOne({
       email: user.email,
@@ -131,7 +131,7 @@ router.post("/refresh", async (req, res) => {
 
 
     const newPayload = {
-      user_Id: user.user_Id,
+      user_Id: user._id.toString(),
     }
     const newRefreshToken = tokenService.generateRefreshToken(newPayload);
 
@@ -140,12 +140,7 @@ router.post("/refresh", async (req, res) => {
       email: payload.email,
       username: payload.username
     });
-    const response = {
-      authenticated: {
-        user: user,
-        accessToken: newAccessToken
-      }
-    };
+   
     res.cookie("refreshToken", newRefreshToken, {
       httpOnly: true,
       secure: true,
@@ -153,11 +148,18 @@ router.post("/refresh", async (req, res) => {
       maxAge: 86400 * 1000 * 365,
     });
 
-    return response;
+    return res.json({
+      message: "Refresh successful",
+      user: user._id,
+      accessToken: newAccessToken,
+    });
 
   }
-  catch (error) {
-    throw error;
+  catch (error: any) {
+    return res.status(500).json({
+      message: error.toString(),
+      detail: "Internal server error",
+    });
   }
 
 });
