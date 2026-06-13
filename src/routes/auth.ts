@@ -2,12 +2,7 @@
 
 import express from "express";
 import Users, { UserSignup, UserLogin } from "../models/users";
-import {
-  hashPassword,
-  verifyPassword,
-  createAccessToken,
-  createRefreshToken,
-} from "../utils/auth_helpers";
+import { tokenService, verifyPassword, hashPassword } from "../utils/auth_helpers";
 import mongoose from "mongoose";
 
 const router = express.Router();
@@ -52,7 +47,9 @@ router.post("/signup", async (req, res) => {
 ========================= */
 
 router.post("/login", async (req, res) => {
+
   try {
+    
     const user: UserLogin = req.body;
     const dbUser = await Users.findOne({
       email: user.email,
@@ -66,14 +63,16 @@ router.post("/login", async (req, res) => {
       });
     }
 
-    const accessToken = createAccessToken({
-      user_id: dbUser._id.toString(),
+    const accessToken = tokenService.generateAccessToken({
+      user_Id: dbUser._id.toString(),
       username: dbUser.username,
     });
-     const refreshToken = createRefreshToken({
-      user_id: dbUser._id.toString(),
+
+    const refreshToken = tokenService.generateRefreshToken({
+      user_Id: dbUser._id.toString(),
       username: dbUser.username,
     });
+
 
     res.cookie("refreshToken", refreshToken, {
       httpOnly: true,
@@ -84,8 +83,8 @@ router.post("/login", async (req, res) => {
 
     return res.json({
       message: "Login successful",
-      user_id: dbUser._id,
-      token: accessToken,
+      user: dbUser._id,
+      accessToken: accessToken,
     });
   } catch (error) {
     return res.status(500).json({
@@ -94,6 +93,74 @@ router.post("/login", async (req, res) => {
   }
 });
 
+
+router.post("/logout", async (req, res) => {
+  try {
+    res.clearCookie("refreshToken", {
+      httpOnly: true,
+      secure: true,
+      sameSite: "none",
+    });
+    return res.json({
+      message: "Logout successful",
+    });
+  } catch (error) {
+    return res.status(500).json({
+      detail: "Internal server error",
+    });
+  }
+});
+
+router.post("/refresh", async (req, res) => {
+  const refreshToken = req.cookies.refreshToken;
+  if (!refreshToken) {
+    return res.status(401).json({
+      detail: "Refresh token missing",
+    });
+  }
+  try {
+    const payload = tokenService.verifyRefreshToken(refreshToken);
+    if (!payload) {
+      throw new Error("Invalid refresh token");
+    }
+    const user = await Users.findById({ _id: payload.user_Id });
+    if (!user) {
+      throw new Error("User not found");
+    }
+    let tokenItem;
+
+
+    const newPayload = {
+      user_Id: user.user_Id,
+    }
+    const newRefreshToken = tokenService.generateRefreshToken(newPayload);
+
+    const newAccessToken = tokenService.generateAccessToken({
+      user_Id: payload.user_Id,
+      email: payload.email,
+      username: payload.username
+    });
+    const response = {
+      authenticated: {
+        user: user,
+        accessToken: newAccessToken
+      }
+    };
+    res.cookie("refreshToken", newRefreshToken, {
+      httpOnly: true,
+      secure: true,
+      sameSite: "none",
+      maxAge: 86400 * 1000 * 365,
+    });
+
+    return response;
+
+  }
+  catch (error) {
+    throw error;
+  }
+
+});
 
 
 export default router;

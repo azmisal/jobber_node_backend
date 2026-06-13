@@ -1,5 +1,5 @@
 import express from "express";
-import { Types } from "mongoose";
+import mongoose from "mongoose";
 
 import Profile from "../models/profile";
 import History from "../models/history";
@@ -162,11 +162,11 @@ router.get("/history", getCurrentUser, async (req: any, res) => {
 router.get(
   "/history/:history_id",
   getCurrentUser,
-  async (req: any, res) => {
+  async (req: any, res: any) => {
     try {
       const { history_id } = req.params;
 
-      if (!Types.ObjectId.isValid(history_id)) {
+      if (!mongoose.isValidObjectId(history_id)) {
         return res.status(400).json({
           detail: "Invalid history id",
         });
@@ -226,10 +226,10 @@ router.get(
    APPLY OPTIMIZATION
 ========================= */
 
-router.post("/apply", getCurrentUser, async (req: any, res) => {
+router.post("/apply", getCurrentUser, async (req: any, res: any) => {
   try {
     const payload = req.body;
-  
+
     const profile: any = await Profile.findOne({
       user_id: req.user.user_id,
     });
@@ -366,7 +366,7 @@ router.post("/apply", getCurrentUser, async (req: any, res) => {
     }
     optimizedResume =
       cleanupResumeData(optimizedResume);
-    
+
     const finalResumeData = JSON.parse(JSON.stringify(optimizedResume));
     const pdfOutputBytes = await generatePdfBytes(finalResumeData);
     const uniqueFilename =

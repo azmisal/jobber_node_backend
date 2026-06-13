@@ -18,11 +18,10 @@ export async function upsertProfile(params: {
   // FETCH EMAIL IF NOT PROVIDED
   // =====================================================
   if (!userEmail) {
-    const filterOr: any[] = [];
+    const filterOr: any[] = [{ email: user_id }];
 
-    // Check if user_id is a valid ObjectId, or match on a custom field if present
-    if (mongoose.Types.ObjectId.isValid(user_id)) {
-      filterOr.push({ _id: new mongoose.Types.ObjectId(user_id) });
+    if (mongoose.isValidObjectId(user_id)) {
+      filterOr.push({ _id: user_id });
     } else {
       filterOr.push({ user_id });
     }
