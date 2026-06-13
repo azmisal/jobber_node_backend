@@ -2,14 +2,55 @@
 
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
-import { Request, Response, NextFunction } from "express";
+import dotenv from "dotenv";
 
-/* =====================================================
-   PASSWORD HELPERS
-===================================================== */
-const JWT_ACCESS_SECRET: string = process.env.JWT_ACCESS_SECRET || "dev_secret";
-const JWT_REFRESH_SECRET: string = process.env.JWT_REFRESH_SECRET || "dev_refresh_secret";
+dotenv.config()
 
+const ACCESS_TOKEN_SECRET = process.env.JWT_ACCESS_SECRET || "";
+const REFRESH_TOKEN_SECRET = process.env.JWT_REFRESH_SECRET || "";
+
+
+interface ITokenPayload {
+  user_Id: string;
+  email?: string;
+  username?: string;
+  deviceId?: string;
+}
+
+export const tokenService = {
+
+  generateAccessToken: (payload: ITokenPayload): string => {
+    return jwt.sign(payload, ACCESS_TOKEN_SECRET, { expiresIn: "15m" });
+
+  },
+
+  generateRefreshToken: (payload: ITokenPayload): string => {
+    return jwt.sign(payload, REFRESH_TOKEN_SECRET, { expiresIn: "7d" });
+
+  },
+
+  verifyAccessToken: (token: string): ITokenPayload | null => {
+    try {
+      return jwt.verify(token, ACCESS_TOKEN_SECRET) as ITokenPayload;
+
+    } catch (e) {
+      return null;
+    }
+  },
+
+  verifyRefreshToken: (token: string): ITokenPayload | null => {
+    try {
+      const payload = jwt.verify(token, REFRESH_TOKEN_SECRET) as ITokenPayload;
+      return payload;
+
+    } catch (e) {
+      return null;
+    }
+  }
+
+
+
+}
 
 
 export const hashPassword = async (
@@ -28,21 +69,6 @@ export const verifyPassword = async (
   );
 };
 
-/* =====================================================
-   JWT TOKEN
-===================================================== */
-
-export function createAccessToken(payload: any) {
-  return jwt.sign(payload, JWT_ACCESS_SECRET, {
-    expiresIn: 60 * 60, // 1 hour in seconds (SAFE with TS)
-  });
-}
-export function createRefreshToken(payload: any) {
-  return jwt.sign(payload, JWT_REFRESH_SECRET, {
-    expiresIn: 60 * 60 * 24 * 30 * 12, // 1 year in seconds (SAFE with TS)
-  });
-}
-
 
 
 /* =====================================================
@@ -52,8 +78,8 @@ export function createRefreshToken(payload: any) {
 
 export const getCurrentUser = (
   req: any,
-  res: Response,
-  next: NextFunction
+  res: any,
+  next: any
 ) => {
   try {
     const authHeader = req.headers.authorization;
@@ -69,10 +95,16 @@ export const getCurrentUser = (
       });
     }
 
-    const decoded = jwt.verify(token, JWT_ACCESS_SECRET) as any;
+    const decoded = tokenService.verifyAccessToken(token);
+
+    if (!decoded) {
+      return res.status(401).json({
+        detail: "Invalid or expired token",
+      });
+    }
 
     req.user = {
-      user_id: decoded.user_id,
+      user_id: decoded.user_Id,
       username: decoded.username,
     };
 
@@ -83,3 +115,5 @@ export const getCurrentUser = (
     });
   }
 };
+
+
