@@ -10,7 +10,7 @@ import {
 
 import {
   canonicalize_resume_data as canonicalizeResumeData,
-   cleanupResumeData,
+  cleanupResumeData,
 } from "../utils/resume_quality";
 
 import { getCurrentUser } from "../utils/auth_helpers";
@@ -28,10 +28,7 @@ const upload = multer();
    UPLOAD RESUME
 ========================= */
 
-router.post(
-  "/upload",
-  getCurrentUser,
-  upload.single("file"),
+router.post("/upload", getCurrentUser, upload.single("file"),
   async (req: any, res) => {
     try {
       const file = req.file;
@@ -85,9 +82,7 @@ router.post(
    GET PROFILE
 ========================= */
 
-router.get(
-  "/profile",
-  getCurrentUser,
+router.get("/profile", getCurrentUser,
   async (req: any, res) => {
     try {
       const profile: any = await Profile.findOne({
@@ -117,9 +112,7 @@ router.get(
    RECTIFY PROFILE
 ========================= */
 
-router.put(
-  "/rectify",
-  getCurrentUser,
+router.put("/rectify", getCurrentUser,
   async (req: any, res) => {
     try {
       const updatedData = req.body;

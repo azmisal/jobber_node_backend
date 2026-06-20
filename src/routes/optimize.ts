@@ -8,7 +8,9 @@ import {
   extractKeywords,
   generateOptimizationProposals,
   createCoverLetter,
+  parseResumeToJson,
 } from "../services/llm_service";
+
 
 import {
   canonicalize_resume_data as canonicalizeResumeData,
@@ -233,210 +235,244 @@ router.post("/apply", getCurrentUser, async (req: any, res: any) => {
     const profile: any = await Profile.findOne({
       user_id: req.user.user_id,
     });
+
     if (!profile) {
       return res.status(404).json({
         detail: "Resume profile not found.",
       });
     }
 
-    let optimizedResume = {
+    // Build base resume
+    let optimizedResume: any = {
       ...(profile.profileData || profile.parsed_resume_data || {}),
     };
 
-    optimizedResume =
-      canonicalizeResumeData(optimizedResume);
+    optimizedResume = canonicalizeResumeData(optimizedResume);
+    // console.log("optimizedResume  : ", optimizedResume);
+    /* =========================
+       APPLY APPROVED PROPOSALS
+    ========================== */
 
     const approvedMap = new Map();
 
-    for (const p of payload.proposals) {
-      if (payload.approved_ids.includes(p.id)) {
+    for (const p of payload.proposals || []) {
+      if (payload.approved_ids?.includes(p.id)) {
         approvedMap.set(p.id, p);
       }
     }
 
-    const sections =
-      optimizedResume.sections || [];
+    const sections = optimizedResume.sections || [];
 
+    const normalizeLookup = (value: any) =>
+      String(value || "")
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, " ")
+        .trim()
+        .replace(/\s+/g, " ");
+
+    const findMatchingSection = (sectionRef: string) => {
+      const target = normalizeLookup(sectionRef);
+      if (!target) return null;
+
+      return sections.find((s: any) => {
+        const candidates = [s.id, s.title, s.type].map(normalizeLookup);
+        return candidates.includes(target);
+      });
+    };
+
+    const tryUpdateObjectField = (
+      item: any,
+      proposal: any
+    ) => {
+      const targetField = proposal.field;
+      const fieldIndex = proposal.field_index;
+
+      if (targetField && targetField in item) {
+        const fieldValue = item[targetField];
+
+        if (Array.isArray(fieldValue)) {
+          if (
+            typeof fieldIndex === "number" &&
+            fieldIndex >= 0 &&
+            fieldIndex < fieldValue.length
+          ) {
+            fieldValue[fieldIndex] = proposal.proposed_text;
+            return true;
+          }
+          return false;
+        }
+
+        if (typeof fieldValue === "string") {
+          item[targetField] = proposal.proposed_text;
+          return true;
+        }
+      }
+
+      const candidateKeys = [
+        "text",
+        "description",
+        "summary",
+        "headline",
+        "role",
+        "position",
+        "title",
+        "name",
+        "company",
+        "institution",
+        "degree",
+        "content",
+        "value",
+      ];
+
+      for (const key of candidateKeys) {
+        if (typeof item[key] === "string") {
+          if (
+            item[key] === proposal.original_text ||
+            proposal.original_text.includes(item[key]) ||
+            item[key].includes(proposal.original_text)
+          ) {
+            item[key] = proposal.proposed_text;
+            return true;
+          }
+        }
+      }
+
+      return false;
+    };
+
+    console.log("[optimize/apply] payload keys:", Object.keys(payload));
+    console.log(
+      "[optimize/apply] approved proposals:",
+      Array.from(approvedMap.keys())
+    );
 
     for (const [, prop] of approvedMap) {
-      const matchingSection = sections.find(
-        (s: any) => s.id === prop.section_id
+      const matchingSection = findMatchingSection(prop.section_id);
+      console.log(
+        "[optimize/apply] matching section for",
+        prop.section_id,
+        ":",
+        matchingSection?.id || null,
+        matchingSection?.title || null
       );
 
-      if (!matchingSection) {
-        console.log(
-          "Section not found:",
-          prop.section_id
-        );
-        continue;
-      }
+      if (!matchingSection) continue;
 
-      const content =
-        matchingSection.content || [];
+      const content = matchingSection.content;
 
-      if (!Array.isArray(content)) {
-        console.log(
-          "Section content is not array"
-        );
-        continue;
-      }
+      if (!Array.isArray(content)) continue;
 
       const item = content[prop.content_index];
 
-      if (item === undefined) {
-        console.log(
-          "Item not found at index:",
-          prop.content_index
-        );
-        continue;
-      }
+      if (item === undefined) continue;
 
-      // STRING ITEMS
       if (typeof item === "string") {
-        console.log("Replacing string item");
-
-        content[prop.content_index] =
-          prop.proposed_text;
-
+        content[prop.content_index] = prop.proposed_text;
         continue;
       }
 
-      // OBJECT ITEMS
-      if (
-        typeof item === "object" &&
-        item !== null
-      ) {
-        if (!(prop.field in item)) {
-          console.log(
-            "Field does not exist:",
-            prop.field
-          );
-
-          continue;
-        }
-
-        const fieldValue =
-          item[prop.field];
-
-        // ARRAY FIELD
-        if (Array.isArray(fieldValue)) {
-          if (
-            typeof prop.field_index !==
-            "number" ||
-            prop.field_index < 0 ||
-            prop.field_index >=
-            fieldValue.length
-          ) {
-            console.log(
-              "Invalid field_index:",
-              prop.field_index
-            );
-
-            continue;
-          }
-
-          console.log(
-            "Updating array field"
-          );
-
-          fieldValue[prop.field_index] =
-            prop.proposed_text;
-
-          continue;
-        }
-
-        // STRING FIELD
-        if (
-          typeof fieldValue === "string"
-        ) {
-          console.log(
-            "Updating string field"
-          );
-
-          item[prop.field] =
-            prop.proposed_text;
-
+      if (typeof item === "object" && item !== null) {
+        const applied = tryUpdateObjectField(item, prop);
+        if (applied) {
           continue;
         }
 
         console.log(
-          "Unsupported field type"
+          "[optimize/apply] could not match object field for proposal",
+          prop.id,
+          item
         );
       }
     }
-    optimizedResume =
-      cleanupResumeData(optimizedResume);
+
+    console.log("[optimize/apply] optimizedResume after applying proposals:");
+    console.log(JSON.stringify(optimizedResume, null, 2));
+    optimizedResume = cleanupResumeData(optimizedResume);
+
+    /* =========================
+       DEBUG: CHECK LINKS EXIST
+       (IMPORTANT for your issue)
+    ========================== */
+
+    const linkCheck: any[] = [];
+
+    (optimizedResume.sections || []).forEach((sec: any) => {
+      (sec.content || []).forEach((c: any) => {
+        if (typeof c === "object" && c !== null) {
+          if (c.links || c.embedded_links) {
+            linkCheck.push({
+              section: sec.id,
+              links: c.links || [],
+              embedded_links: c.embedded_links || [],
+            });
+          }
+        }
+      });
+    });
+
+
+    /* =========================
+       PDF GENERATION
+    ========================== */
 
     const finalResumeData = JSON.parse(JSON.stringify(optimizedResume));
     const pdfOutputBytes = await generatePdfBytes(finalResumeData);
-    const uniqueFilename =
-      `${payload.output_file_name}_${req.user.user_id}`;
 
-    const cloudinaryDownloadUrl =
-      await uploadPdf(
-        pdfOutputBytes,
-        uniqueFilename
-      );
+    const uniqueFilename = `${payload.output_file_name}_${req.user.user_id}`;
 
-    const coverLetter =
-      await createCoverLetter(
-        optimizedResume,
-        profile.current_jd || "",
-        payload.model
-      );
+    const cloudinaryDownloadUrl = await uploadPdf(
+      pdfOutputBytes,
+      uniqueFilename
+    );
 
-    const currentJd =
-      profile.current_jd || "";
+    /* =========================
+       COVER LETTER
+    ========================== */
 
-    const [extractedCompany, confidence] =
+    const coverLetter = await createCoverLetter(
+      optimizedResume,
+      profile.current_jd || "",
+      payload.model
+    );
+
+    /* =========================
+       COMPANY NAME EXTRACTION
+    ========================== */
+
+    const currentJd = profile.current_jd || "";
+    const [extractedCompany] =
       extractCompanyNameFromJd(currentJd);
 
     let companyName =
-      payload.company_name ||
-      extractedCompany ||
-      "";
+      payload.company_name || extractedCompany || "";
+
+    /* =========================
+       SAVE HISTORY
+    ========================== */
 
     const historyDoc = await History.create({
       user_id: req.user.user_id,
-
-      userEmail:
-        profile.userEmail || "",
-
+      userEmail: profile.userEmail || "",
       companyName,
-
-      resumeName:
-        payload.output_file_name,
-
-      generatedResumeUrl:
-        cloudinaryDownloadUrl,
-
+      resumeName: payload.output_file_name,
+      generatedResumeUrl: cloudinaryDownloadUrl,
       originalJobDescription:
-        payload.original_job_description ||
-        currentJd,
-
-      selectedKeywords:
-        payload.selected_keywords || [],
-
-      optimizationProposals:
-        payload.proposals || [],
-
+        payload.original_job_description || currentJd,
+      selectedKeywords: payload.selected_keywords || [],
+      optimizationProposals: payload.proposals || [],
       generatedAt: new Date(),
-
-      sourceResumeProfileId:
-        profile._id?.toString() || "",
+      sourceResumeProfileId: profile._id?.toString() || "",
     });
 
+    /* =========================
+       RESPONSE
+    ========================== */
+
     return res.json({
-      message:
-        "Tailored resume generated successfully.",
-
+      message: "Tailored resume generated successfully.",
       file_name: uniqueFilename,
-
-      download_url:
-        cloudinaryDownloadUrl,
-
+      download_url: cloudinaryDownloadUrl,
       cover_letter: coverLetter,
-
       historyId: historyDoc._id,
     });
   } catch (error) {

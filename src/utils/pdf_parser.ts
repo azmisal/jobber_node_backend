@@ -237,7 +237,7 @@ export async function extractResumePdfContext(
     throw new Error("Unable to read PDF.");
   }
   const contact_block = extract_contact_block(raw_text);
-  
+
 
   const contact_details = {
     ...extract_contacts_from_text(raw_text),
@@ -245,7 +245,7 @@ export async function extractResumePdfContext(
       ...extract_contacts_from_text(contact_block).links,
     ],
   };
-  
+
   return {
     text: raw_text,
     plain_text: raw_text,
@@ -384,9 +384,17 @@ function writeSectionTitle(
 
 function writeBullet(
   doc: PDFKit.PDFDocument,
-  text: string
+  text: string,
+  linkUrl?: string
 ) {
   if (!text?.trim()) return;
+
+  // Render as plain text.
+  // If linkUrl provided, PDFKit can make a clickable region.
+  // Note: PDFKit link rectangles require exact coordinates; we approximate by
+  // using current cursor position.
+  const startX = 64; // indent-ish (margin 50 + indent 14)
+  const startY = doc.y;
 
   doc
     .font("Helvetica")
@@ -397,7 +405,15 @@ function writeBullet(
       paragraphGap: 3,
       lineGap: 1,
     });
+
+  if (linkUrl) {
+    // approximate clickable width based on text length
+    const approxWidth = Math.min(520, (text.length + 2) * 5.2);
+    const height = 14;
+    doc.link(startX, startY, approxWidth, height, linkUrl);
+  }
 }
+
 
 function writeExperienceItem(
   doc: PDFKit.PDFDocument,
@@ -408,8 +424,7 @@ function writeExperienceItem(
     .fontSize(11)
     .fillColor("#111")
     .text(
-      `${item.position || ""} ${
-        item.company ? `— ${item.company}` : ""
+      `${item.position || ""} ${item.company ? `— ${item.company}` : ""
       }`,
       {
         continued: false,
@@ -495,20 +510,143 @@ function writeSkillsSection(
   doc: PDFKit.PDFDocument,
   skills: string[]
 ) {
+  // Keep it ATS-friendly: plain text, minimal decorations.
   doc
     .font("Helvetica")
-    .fontSize(10.5)
+    .fontSize(10.2)
     .fillColor("#222")
     .text(skills.join(" • "), {
-      lineGap: 4,
+      lineGap: 3,
     });
 
-  doc.moveDown(0.8);
+  doc.moveDown(0.6);
+}
+
+function writeTextWithOptionalLLMTrim(
+  doc: PDFKit.PDFDocument,
+  lines: string[],
+  maxLines: number
+) {
+  const safeLines = (lines || []).map((x) => String(x)).filter(Boolean);
+  const trimmed = safeLines.slice(0, maxLines);
+  for (const l of trimmed) {
+    writeBullet(doc, l);
+  }
+  doc.moveDown(0.3);
+}
+
+function normalizeSectionKey(value: any): string {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .replace(/\s+/g, " ");
+}
+
+function isSummaryLikeSection(section: any): boolean {
+  const key = normalizeSectionKey(section?.type || section?.title || "");
+  return (
+    key === "summary" ||
+    key === "profile" ||
+    key === "objective" ||
+    key === "about" ||
+    key === "headline"
+  );
+}
+
+function isSkillsLikeSection(section: any): boolean {
+  const key = normalizeSectionKey(section?.type || section?.title || "");
+  return (
+    key === "skills" ||
+    key === "technical skills" ||
+    key === "technical skill" ||
+    key === "competencies" ||
+    key === "tooling"
+  );
+}
+
+function extractRenderableText(item: any): string[] {
+  if (typeof item === "string") {
+    return item.trim() ? [item] : [];
+  }
+
+  if (!item || typeof item !== "object") {
+    return [];
+  }
+
+  const candidateKeys = [
+    "text",
+    "value",
+    "description",
+    "summary",
+    "headline",
+    "title",
+    "name",
+    "label",
+    "role",
+    "position",
+    "company",
+    "institution",
+    "degree",
+    "content",
+  ];
+
+  const collected: string[] = [];
+
+  for (const key of candidateKeys) {
+    const value = item[key];
+    if (typeof value === "string" && value.trim()) {
+      collected.push(value.trim());
+    }
+  }
+
+  if (Array.isArray(item.achievements)) {
+    for (const ach of item.achievements) {
+      if (typeof ach === "string") {
+        collected.push(ach);
+      } else if (ach && typeof ach === "object") {
+        collected.push(...extractRenderableText(ach));
+      }
+    }
+  }
+
+  return collected;
+}
+
+function guessExperienceYears(resume_data: any): number {
+  // Heuristic: parse dates from experience section.
+  // If parsing fails, default to 0.
+  const exp = resume_data?.sections?.find(
+    (s: any) => s && (s.type === "experience" || s.id === "experience")
+  );
+  const items: any[] = exp?.content || [];
+  if (!Array.isArray(items)) return 0;
+
+  const nowYear = new Date().getFullYear();
+  const startYears: number[] = [];
+
+  const parseYear = (s: any): number | null => {
+    if (!s) return null;
+    const str = String(s);
+    const match = str.match(/(19|20)\d{2}/);
+    return match ? Number(match[0]) : null;
+  };
+
+  for (const it of items) {
+    const dates = it?.dates || "";
+    const startYear = parseYear(dates);
+    if (typeof startYear === "number") startYears.push(startYear);
+  }
+
+  if (!startYears.length) return 0;
+  const minStart = Math.min(...startYears);
+  return Math.max(0, nowYear - minStart);
 }
 
 export function generatePdfBytes(
   resume_data: any
 ): Promise<Buffer> {
+
   return new Promise((resolve, reject) => {
     try {
       const doc = new PDFDocument({
@@ -568,98 +706,113 @@ export function generatePdfBytes(
       // SECTIONS
       // =====================================================
 
+      const experienceYears = guessExperienceYears(resume_data);
+      // Requirement:
+      // - <= 3 years => 1 PDF page
+      // - > 3 years => up to 2 pages
+      const maxBulletsPerTextSection = experienceYears > 3 ? 10 : 6;
+      const maxExperienceItems = experienceYears > 3 ? 4 : 3;
+      const maxProjectItems = experienceYears > 3 ? 3 : 2;
+
       for (const section of sections) {
-        if (
-          !section ||
-          !Array.isArray(section.content)
-        ) {
+        if (!section || !Array.isArray(section.content)) continue;
+
+        const sectionType = normalizeSectionKey(section?.type || "");
+        const sectionTitle = normalizeSectionKey(section?.title || "");
+        const isTextSection =
+          sectionType === "text" ||
+          sectionType === "summary" ||
+          sectionType === "profile" ||
+          sectionType === "objective" ||
+          sectionType === "about" ||
+          sectionTitle === "summary" ||
+          sectionTitle === "profile" ||
+          sectionTitle === "objective" ||
+          sectionTitle === "about";
+
+        const isSkillsSection =
+          sectionType === "skills" ||
+          sectionType === "technical skills" ||
+          sectionType === "technical skill" ||
+          sectionTitle === "skills" ||
+          sectionTitle === "technical skills" ||
+          sectionTitle === "technical skill";
+
+        writeSectionTitle(doc, section.title || "Section");
+
+        // SUMMARY / TEXT (ATS-friendly bullets)
+        if (isTextSection) {
+          const lines = (section.content || []).flatMap((item: any) =>
+            extractRenderableText(item)
+          );
+          writeTextWithOptionalLLMTrim(doc, lines, maxBulletsPerTextSection);
           continue;
         }
 
-        writeSectionTitle(
-          doc,
-          section.title || "Section"
-        );
-
-        // SUMMARY / TEXT
-        if (
-          section.type === "text" ||
-          section.id === "summary"
-        ) {
-          for (const item of section.content) {
-            doc
-              .font("Helvetica")
-              .fontSize(10.5)
-              .fillColor("#222")
-              .text(String(item), {
-                lineGap: 3,
-              });
-          }
-
-          doc.moveDown(1);
-          continue;
-        }
-
-        // EXPERIENCE
-        if (
-          section.type === "experience"
-        ) {
-          for (const item of section.content) {
+        // EXPERIENCE (trim to keep within 1-2 pages)
+        if (sectionType === "experience") {
+          const items = section.content || [];
+          for (const item of items.slice(0, maxExperienceItems)) {
             writeExperienceItem(doc, item);
           }
-
           continue;
         }
 
         // PROJECTS
-        if (
-          section.type === "projects"
-        ) {
-          for (const item of section.content) {
+        if (sectionType === "projects") {
+          const items = section.content || [];
+          for (const item of items.slice(0, maxProjectItems)) {
             writeProjectItem(doc, item);
           }
-
           continue;
         }
 
         // EDUCATION
-        if (
-          section.type === "education"
-        ) {
+        if (sectionType === "education") {
           for (const item of section.content) {
             writeEducationItem(doc, item);
           }
-
           continue;
         }
 
         // SKILLS
-        if (
-          section.type === "skills"
-        ) {
-          writeSkillsSection(
-            doc,
-            section.content
+        if (isSkillsSection) {
+          const lines = (section.content || []).flatMap((item: any) =>
+            extractRenderableText(item)
           );
-
+          if (lines.length) {
+            writeSkillsSection(doc, lines);
+          } else {
+            writeSkillsSection(doc, (section.content || []).map(String));
+          }
           continue;
         }
 
         // FALLBACK
         for (const item of section.content) {
-          if (typeof item === "string") {
+          const extracted = extractRenderableText(item);
+          if (extracted.length > 0) {
+            for (const text of extracted.slice(0, 6)) {
+              writeBullet(doc, text);
+            }
+          } else if (typeof item === "string") {
             writeBullet(doc, item);
-            continue;
+          } else {
+            const maybeUrl = (item as any)?.url || (item as any)?.link;
+            if (maybeUrl) {
+              writeBullet(
+                doc,
+                String((item as any)?.label || "Link") + ": " + String(maybeUrl)
+              );
+            } else {
+              doc.font("Helvetica").fontSize(10).text(JSON.stringify(item));
+            }
           }
-
-          doc
-            .font("Helvetica")
-            .fontSize(10)
-            .text(JSON.stringify(item));
         }
 
-        doc.moveDown(1);
+        doc.moveDown(0.6);
       }
+
 
       doc.end();
     } catch (err) {

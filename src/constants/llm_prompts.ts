@@ -155,12 +155,18 @@ RETURN FORMAT:
       "id": 1,
       "section_id": "section-id",
       "content_index": 0,
+      "field": "optional-field-name",
+      "field_index": 0,
       "original_text": "",
       "proposed_text": "",
       "keyword_added": ""
     }
   ]
 }
+
+IMPORTANT:
+- Use "field" and "field_index" only when the change targets a nested object field inside a content item.
+- If the content item is a plain string or array item, you can omit "field" and "field_index".
 `;
 
 /* =====================================================
