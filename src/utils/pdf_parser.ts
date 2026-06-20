@@ -506,16 +506,63 @@ function writeEducationItem(
   doc.moveDown(0.8);
 }
 
+function dedupeTextList(values: any[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+
+  for (const raw of values || []) {
+    const text = String(raw || "").trim();
+    if (!text) continue;
+
+    const cleaned = text
+      .replace(/\s+/g, " ")
+      .replace(/[|•,;]+/g, ",")
+      .replace(/\s*,\s*/g, ",")
+      .replace(/^[,\s]+|[,\s]+$/g, "")
+      .trim();
+
+    if (!cleaned) continue;
+
+    const key = cleaned.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(cleaned);
+  }
+
+  return result;
+}
+
+function splitSkillTokens(value: any): string[] {
+  if (value == null) return [];
+
+  if (Array.isArray(value)) {
+    return value.flatMap((item) => splitSkillTokens(item));
+  }
+
+  const raw = String(value || "").trim();
+  if (!raw) return [];
+
+  const candidates = raw
+    .split(/[|•,;\n]+/)
+    .map((part) => part.replace(/\s+/g, " ").trim())
+    .filter(Boolean);
+
+  return candidates.length > 1 ? candidates : [raw];
+}
+
 function writeSkillsSection(
   doc: PDFKit.PDFDocument,
   skills: string[]
 ) {
+  const uniqueSkills = dedupeTextList(skills);
+  if (!uniqueSkills.length) return;
+
   // Keep it ATS-friendly: plain text, minimal decorations.
   doc
     .font("Helvetica")
     .fontSize(10.2)
     .fillColor("#222")
-    .text(skills.join(" • "), {
+    .text(uniqueSkills.join(" • "), {
       lineGap: 3,
     });
 
@@ -567,7 +614,7 @@ function isSkillsLikeSection(section: any): boolean {
 
 function extractRenderableText(item: any): string[] {
   if (typeof item === "string") {
-    return item.trim() ? [item] : [];
+    return item.trim() ? [item.trim()] : [];
   }
 
   if (!item || typeof item !== "object") {
@@ -597,20 +644,22 @@ function extractRenderableText(item: any): string[] {
     const value = item[key];
     if (typeof value === "string" && value.trim()) {
       collected.push(value.trim());
+    } else if (Array.isArray(value)) {
+      collected.push(...value.map((v) => String(v || "").trim()).filter(Boolean));
     }
   }
 
   if (Array.isArray(item.achievements)) {
     for (const ach of item.achievements) {
       if (typeof ach === "string") {
-        collected.push(ach);
+        collected.push(ach.trim());
       } else if (ach && typeof ach === "object") {
         collected.push(...extractRenderableText(ach));
       }
     }
   }
 
-  return collected;
+  return dedupeTextList(collected);
 }
 
 function guessExperienceYears(resume_data: any): number {
@@ -777,9 +826,15 @@ export function generatePdfBytes(
 
         // SKILLS
         if (isSkillsSection) {
-          const lines = (section.content || []).flatMap((item: any) =>
-            extractRenderableText(item)
-          );
+          const rawSkillItems = (section.content || []).flatMap((item: any) => {
+            const extracted = extractRenderableText(item);
+            if (extracted.length) {
+              return extracted.flatMap((x) => splitSkillTokens(x));
+            }
+            return splitSkillTokens(item);
+          });
+
+          const lines = dedupeTextList(rawSkillItems);
           if (lines.length) {
             writeSkillsSection(doc, lines);
           } else {
